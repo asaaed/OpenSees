@@ -36,6 +36,7 @@
 #include "TclUniaxialMaterialTester.h"
 #include "TclPlaneStressMaterialTester.h"
 #include "TclSectionTester.h"
+#include "stepEnlargement.h" /* stepEnlargement added by Aram */
 
 #include <tcl.h>
 
@@ -64,11 +65,222 @@ OPS_ResetInput(ClientData clientData,
 	       Domain *domain,
 	       TclModelBuilder *builder);
 
+// reduce command added here
+#include "stepEnlargement.h"
+static int StepEnlargement_Cmd(
+	ClientData clientData,	/* Main window for application. */
+	Tcl_Interp *interp,		/* Current interpreter. */
+	int objc,			    /* Number of arguments. */
+	Tcl_Obj *const objv[])	/* Argument values. */
+{
+	Tcl_Obj *resultList;
+
+	int nFactor = 0;
+	int enlargementType = 0;
+	const char *fileNameInput;
+	vector<double> datar;
+	int length = 0;
+	// check if input arg are sufficcient
+	if (objc < 4) {
+		Tcl_WrongNumArgs(interp, 1, objv, "$enlargementFactor $filePath");
+		return TCL_ERROR;
+	}
+	else {
+		if (Tcl_GetIntFromObj(interp, objv[2], &nFactor) != TCL_OK) {
+			Tcl_WrongNumArgs(interp, 1, objv, ">> enlargementFactor should be \'Integer\'");
+			return TCL_ERROR;
+		}
+		else if (Tcl_GetIntFromObj(interp, objv[1], &enlargementType) != TCL_OK) {
+			Tcl_WrongNumArgs(interp, 1, objv, ">> enlargementType should be \'Integer\'");
+			return TCL_ERROR;
+		}
+		else {
+			Tcl_GetIntFromObj(interp, objv[1], &enlargementType);
+			Tcl_GetIntFromObj(interp, objv[2], &nFactor);
+		}
+		fileNameInput = Tcl_GetStringFromObj(objv[3], &length);
+	}
+	datar = readPath(fileNameInput);
+	if (enlargementType == 1) {
+		datar = stepEnlargement_INT(nFactor, datar);
+	}
+	resultList = Tcl_NewListObj(0, NULL);
+	for (double &points : datar) {
+		Tcl_ListObjAppendElement(interp, resultList, Tcl_NewDoubleObj(points));
+	}
+	Tcl_SetObjResult(interp, resultList);
+	// if writeToFile name is available:
+	if (objc == 5) {
+		const char *fileNameOutput = Tcl_GetStringFromObj(objv[4], &length);
+	//	writetofile(fileNameOutput, datar);
+	}
+	
+	return TCL_OK;
+}
+// implement a technique method
+vector<double> stepEnlargement_INT(int nFactor, vector<double>& datav)
+{
+	int nFactorPrime { 0 };
+	int nPrime { 0 };
+	double sigmaf { 0.0 };
+	size_t nStepOrg = datav.size();
+	//    check eq 35 of article
+	if (nFactor % 2 == 0)
+	{
+		nFactorPrime = nFactor / 2;
+	}
+	else
+	{
+		nFactorPrime = (nFactor - 1) / 2;
+	}
+	// calculate number of steps of new series
+	double dStepNew = ((double)nStepOrg - 1.0) / (double)nFactor + 1.0;
+    size_t nStepNew =ceil(dStepNew);
+    int nStepOrgNew = (nStepNew - 1)*nFactor+1;
+    while (nStepOrgNew > datav.size()) {
+        datav.push_back (0.0);
+    }
+	// create vector
+	vector<double> new_datav(nStepNew, 0);
+	// assign f0 to f'0
+	new_datav[0] = datav[0];
+	// assign fend to f'end
+	if (nStepOrgNew == nStepOrg)
+    {
+        new_datav[nStepNew - 1] = datav[nStepOrg - 1];
+    }
+    else
+    {
+        new_datav[nStepNew - 1] = 0.000;
+    }
+
+	int iLocNew { 0 };
+	int iLocOrg { 0 };
+
+	for (int i = 1; i<nStepNew - 1; i++)
+	{
+		iLocNew = i;
+		// calculate Step_i of original series on new series
+		iLocOrg = (iLocNew - 1)*nFactor + nFactor;
+		// check step 2 and end-1
+		if ((i == 1) | (i == nStepNew - 2))
+		{
+			nPrime = (nFactor - 1);
+		}
+		else
+		{
+			nPrime = nFactorPrime;
+		}
+		sigmaf = 0;
+		for (int inneri = 1; inneri <= nPrime; inneri++)
+		{
+			sigmaf = sigmaf + (1.0 / (4.0 * nPrime))*(datav[iLocOrg + inneri] + datav[iLocOrg - inneri]);
+		}
+		new_datav[i] = (1.0 / 2.0)*datav[iLocOrg] + sigmaf;
+	}
+	return new_datav;
+}
+// read data by path
+vector<double> readPath(string fileNameInput)
+{
+	double datapoint{ 0.0 };
+	int counterData{ 0 };
+    //    opens file for reding
+	fstream inFile;
+	inFile.open(fileNameInput, ios::in);
+	//    count the data point
+	while (inFile >> datapoint)
+	{
+		counterData++;
+	}
+	//    calculate number of steps of original series
+	int nStepOrg = counterData;
+
+	vector<double> datav(nStepOrg, 0.0);
+	// rewind text file to start point
+	inFile.clear();
+	inFile.seekg(0);
+    // read data
+	for (int i = 0; i < nStepOrg; i++)
+	{
+		inFile >> datav[i];
+	}
+	inFile.close();
+	return datav;
+}
 int myCommands(Tcl_Interp *interp) {
     Tcl_CreateCommand(interp, "model", specifyModelBuilder,
 		      (ClientData)NULL, (Tcl_CmdDeleteProc *)NULL);
+
+	//opserr << " |-----------------------------------------------------------------------------|\n";
+	//opserr << " | This version of OpenSees is a custom compiled version, which apply a method |\n";
+	//opserr << " |      proposed by [1] to reduce the run time of time history analysis.       |\n";
+	//opserr << " |                                                                             |\n";
+	//opserr << " |                 Reference: [1] https://doi.org/10.1002/cnm.1097             |\n";
+	//opserr << " |               Code Developed by: Aram Saaed (a.saaed@iiees.ac.ir)           |\n";
+	//opserr << " |-----------------------------------------------------------------------------|\n";
+//	opserr << " | Original command:                                                           |\n";
+	//opserr << " | Command (https://opensees.berkeley.edu/wiki/index.php/Path_TimeSeries):     |\n";
+//	opserr << " | https://opensees.berkeley.edu/wiki/index.php/Path_TimeSeries                |\n";
+//	opserr << " |                                                                             |\n";
+	//opserr << " | timeSeries Path $tsTag -dt $dt -values {list_of_values} ...                 |\n";
+//	opserr << " |  <-useLast> <-prependZero> <-startTime $tStart>                             |\n";
+	//opserr << " |                                                                             |\n";
+	//opserr << " | New use of command:                                                         |\n";
+//	opserr << " |                                                                             |\n";
+	//opserr << " | timeSeries Path $tsTag -dt $dt                                              |\n";
+//	opserr << " | <-factor $cFactor> <-useLast> <-prependZero> <-startTime $tStart>           |\n";
+	//opserr << " | -values [stepEnlargement $Type $enlargementFactor $filePath <$outFilePath>] |\n";
+	//opserr << " |                                                                             |\n";
+	//opserr << " | Parameters definition:                                                      |\n";
+	//opserr << " |    $Type             : type of reduction ( = 1)                             |\n";
+	//opserr << " |    $enlargementFactor: ratio of step size to original step size (integer)   |\n";
+	//opserr << " |    $filePath         : file containing the load factors values              |\n";
+	//opserr << " |    $outFilePath      : file name, to save new generated record (optional)   |\n";
+	//opserr << " |-----------------------------------------------------------------------------|\n";
+	//opserr << "\n\n";
+    // https://stackoverflow.com/questions/4053837/colorizing-text-in-the-console-with-c
+	//HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+	opserr << " |-----------------------------------------------------------------------------|\n";
+	//SetConsoleTextAttribute(hConsole, 12);
+	opserr << "   This version of OpenSees is a custom compiled version, which apply a method  \n";
+	opserr << "        proposed by [1] to reduce the run time of time history analysis.        \n";
+	opserr << "                                                                                \n";
+	opserr << "                  Reference: [1] https://doi.org/10.1002/cnm.1097               \n";
+	opserr << "                 Code Developed by: Aram Saaed (a.saaed@iiees.ac.ir)            \n\n";
+	//SetConsoleTextAttribute(hConsole, 7);
+	opserr << "   Original Command: \n";
+	opserr << "   (https://opensees.berkeley.edu/wiki/index.php/Path_TimeSeries): \n";
+	opserr << "   timeSeries Path $tsTag -dt $dt -values ";
+	//SetConsoleTextAttribute(hConsole, 14);
+	opserr << "{list_of_values}";
+	//SetConsoleTextAttribute(hConsole, 7);
+	opserr << "<-useLast>  \n";
+	opserr << "   <-prependZero> <-startTime $tStart>\n";
+	opserr << "                                                                                \n";
+	
+	opserr << "   New use of command:                                                          \n";
+	opserr << "   timeSeries Path $tsTag -dt $dt  \n";
+	//opserr << "   -values [stepEnlargement $Type $enlargementFactor $filePath <$outFilePath>]  \n";
+	opserr << "   -values ";
+	//SetConsoleTextAttribute(hConsole, 14);
+	opserr << "[stepEnlargement $Type $enlargementFactor $filePath <$outFilePath>]  \n";
+	//SetConsoleTextAttribute(hConsole, 7);
+	//opserr << "   -values [stepEnlargement $Type $enlargementFactor $filePath <$outFilePath>]  \n";
+	opserr << "   <-factor $cFactor> <-useLast> <-prependZero> <-startTime $tStart> \n";
+	opserr << "                                                                                \n";
+	opserr << "   Parameters definition:                                                       \n";
+	opserr << "      $Type             : type of reduction ( Type = 1)                         \n";
+	opserr << "      $enlargementFactor: ratio of step size to original step size (integer)    \n";
+	opserr << "      $filePath         : file containing the load factors values               \n";
+	opserr << "      $outFilePath      : file name, to save new generated record (optional)    \n";
+	
+	opserr << " |-----------------------------------------------------------------------------|\n";
+	opserr << "\n\n";
+	Tcl_CreateObjCommand(interp, "stepEnlargement", &StepEnlargement_Cmd, NULL, NULL);
     return 0;
 }
+
 
 int
 specifyModelBuilder(ClientData clientData, Tcl_Interp *interp, int argc, TCL_Char **argv)
